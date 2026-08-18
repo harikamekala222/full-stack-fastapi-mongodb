@@ -7,20 +7,26 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Converts repository name to lower case to prevent Docker tag formatting issues
   IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/farm-app
 
 jobs:
+
+  # ==========================================================
+  # BUILD & PUSH
+  # ==========================================================
   build-and-push:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
+
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -28,7 +34,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push Backend
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: ./backend/backend.dockerfile
@@ -36,7 +42,7 @@ jobs:
           tags: ${{ env.IMAGE_BASE }}-backend:latest
 
       - name: Build and Push Celery Worker
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: ./backend/celeryworker.dockerfile
@@ -44,38 +50,94 @@ jobs:
           tags: ${{ env.IMAGE_BASE }}-celeryworker:latest
 
       - name: Build and Push Frontend
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./frontend
+          file: ./frontend/Dockerfile
           push: true
           tags: ${{ env.IMAGE_BASE }}-frontend:latest
 
+
+  # ==========================================================
+  # DEPLOY TO SWARM
+  # ==========================================================
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+
     steps:
-      - name: Deploy to Docker Swarm via SSH
-        uses: appleboy/ssh-action@v1.0.3
+
+      - name: Deploy to Docker Swarm
+        uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+
           script: |
+
+            set -e
+
+            echo "=========================================="
+            echo "STARTING DEPLOYMENT"
+            echo "=========================================="
+
             cd ~/farm-app
-            
-            # Synchronize local repository changes
-            git pull origin main
-            
-            # Log into GHCR on the production manager host using an active GitHub token
-            # Replace YOUR_GITHUB_USERNAME with your lowercase GitHub account handle
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            
-            # Pre-fetch the fresh images to local cache
-            docker pull ghcr.io/your_github_username/farm-app-backend:latest
-            docker pull ghcr.io/your_github_username/farm-app-celeryworker:latest
-            docker pull ghcr.io/your_github_username/farm-app-frontend:latest
-            
-            # Safely re-deploy to the cluster mesh
-            set -a && source .env && set +a
-            export TRAEFIK_PUBLIC_NETWORK=traefik-public
-            docker stack deploy --with-registry-auth -c docker-compose.yml farm-app-com
+
+            echo "Pulling latest source code..."
+
+            git fetch origin
+            git reset --hard origin/main
+
+
+            echo "=========================================="
+            echo "LOGIN TO GHCR"
+            echo "=========================================="
+
+            echo "${{ secrets.GHCR_TOKEN }}" | \
+              docker login ghcr.io \
+              -u "${{ secrets.GHCR_USERNAME }}" \
+              --password-stdin
+
+
+            echo "=========================================="
+            echo "PULLING DOCKER IMAGES"
+            echo "=========================================="
+
+            docker pull ${{ env.IMAGE_BASE }}-backend:latest
+
+            docker pull ${{ env.IMAGE_BASE }}-celeryworker:latest
+
+            docker pull ${{ env.IMAGE_BASE }}-frontend:latest
+
+
+            echo "=========================================="
+            echo "DEPLOYING SWARM STACK"
+            echo "=========================================="
+
+            export IMAGE_BASE=${{ env.IMAGE_BASE }}
+
+            docker stack deploy \
+              --with-registry-auth \
+              --detach=true \
+              -c docker-compose.yml \
+              farm-app
+
+
+            echo "=========================================="
+            echo "WAITING FOR SERVICES"
+            echo "=========================================="
+
+            sleep 20
+
+
+            echo "=========================================="
+            echo "STACK SERVICES"
+            echo "=========================================="
+
+            docker stack services farm-app
+
+
+            echo "=========================================="
+            echo "DEPLOYMENT COMPLETE"
+            echo "=========================================="
