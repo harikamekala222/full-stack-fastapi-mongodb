@@ -1,6 +1,9 @@
 services:
   proxy:
     image: traefik:v2.2
+    ports:
+      - "80:80"
+      - "8080:8080"
     networks:
       - ${TRAEFIK_PUBLIC_NETWORK?Variable not set}
       - default
@@ -105,6 +108,8 @@ services:
 
   backend:
     image: "${DOCKER_IMAGE_BACKEND?Variable not set}:${TAG-latest}"
+    ports:
+      - "8000:80"
     logging:
       driver: "json-file"
       options:
@@ -155,6 +160,8 @@ services:
   
   frontend:
     image: "${DOCKER_IMAGE_FRONTEND?Variable not set}:${TAG-latest}"
+    ports:
+      - "3000:80"
     env_file:
       - .env
       - ./frontend/.env.local
