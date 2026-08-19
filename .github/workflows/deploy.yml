@@ -37,16 +37,10 @@ jobs:
       # 3. DEPLOY TO EC2
       # ==========================================================
       - name: Deploy to EC2
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-          APP_PATH: ${{ secrets.APP_PATH }}
-
         run: |
 
           ssh -i ~/.ssh/ec2_key \
-            "${EC2_USERNAME}@${EC2_HOST}" \
-            "APP_PATH='${APP_PATH}' bash -s" << 'EOF'
+            "${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}" << 'EOF'
 
             set -e
 
@@ -54,12 +48,14 @@ jobs:
             echo "STARTING DEPLOYMENT"
             echo "=========================================="
 
-            echo "Application path:"
-            echo "$APP_PATH"
 
-            cd "$APP_PATH"
+            # ====================================================
+            # GO TO APPLICATION DIRECTORY
+            # ====================================================
 
-            echo "Current directory:"
+            cd "${{ secrets.APP_PATH }}"
+
+            echo "Application directory:"
             pwd
 
 
@@ -68,7 +64,7 @@ jobs:
             # ====================================================
 
             echo "=========================================="
-            echo "PULLING LATEST CODE"
+            echo "UPDATING SOURCE CODE"
             echo "=========================================="
 
             git fetch origin
@@ -108,7 +104,7 @@ jobs:
 
 
             # ====================================================
-            # CHECK / CREATE TRAEFIK NETWORK
+            # CREATE TRAEFIK NETWORK IF NOT EXISTS
             # ====================================================
 
             echo "=========================================="
@@ -117,11 +113,11 @@ jobs:
 
             if docker network inspect traefik-public >/dev/null 2>&1; then
 
-              echo "traefik-public network already exists."
+              echo "traefik-public already exists."
 
             else
 
-              echo "Creating traefik-public overlay network..."
+              echo "Creating traefik-public network..."
 
               docker network create \
                 --driver overlay \
@@ -132,19 +128,7 @@ jobs:
 
 
             # ====================================================
-            # VERIFY TRAEFIK NETWORK
-            # ====================================================
-
-            echo "=========================================="
-            echo "VERIFYING TRAEFIK NETWORK"
-            echo "=========================================="
-
-            docker network inspect traefik-public \
-              --format 'Name={{.Name}} Driver={{.Driver}} Scope={{.Scope}}'
-
-
-            # ====================================================
-            # CHECK REQUIRED FILES
+            # VERIFY REQUIRED FILES
             # ====================================================
 
             echo "=========================================="
@@ -214,7 +198,7 @@ jobs:
 
 
             # ====================================================
-            # DEPLOY DOCKER SWARM
+            # DEPLOY SWARM STACK
             # ====================================================
 
             echo "=========================================="
@@ -222,6 +206,7 @@ jobs:
             echo "=========================================="
 
             docker stack deploy \
+              --resolve-image never \
               --detach=true \
               -c docker-compose.yml \
               fastapi-app
@@ -257,23 +242,11 @@ jobs:
             echo "SERVICE STATUS"
             echo "=========================================="
 
-            docker service ps fastapi-app_proxy --no-trunc
-
-            docker service ps fastapi-app_backend --no-trunc
-
-            docker service ps fastapi-app_celeryworker --no-trunc
-
-            docker service ps fastapi-app_frontend --no-trunc
-
-            docker service ps fastapi-app_mongodb --no-trunc
-
-            docker service ps fastapi-app_queue --no-trunc
-
-            docker service ps fastapi-app_flower --no-trunc
+            docker stack ps fastapi-app --no-trunc
 
 
             # ====================================================
-            # SHOW RUNNING CONTAINERS
+            # CHECK RUNNING CONTAINERS
             # ====================================================
 
             echo "=========================================="
@@ -284,7 +257,7 @@ jobs:
 
 
             # ====================================================
-            # FINAL SERVICE CHECK
+            # CHECK FINAL REPLICAS
             # ====================================================
 
             echo "=========================================="

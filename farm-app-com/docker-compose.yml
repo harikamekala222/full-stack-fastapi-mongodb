@@ -1,7 +1,7 @@
 services:
 
   # ============================================================
-  # TRAEFIK REVERSE PROXY
+  # TRAEFIK
   # ============================================================
   proxy:
     image: traefik:v2.11
@@ -79,7 +79,7 @@ services:
   # FASTAPI BACKEND
   # ============================================================
   backend:
-    image: "${DOCKER_IMAGE_BACKEND:-farm-backend}:latest"
+    image: farm-backend:latest
 
     build:
       context: ./backend
@@ -122,7 +122,7 @@ services:
   # CELERY WORKER
   # ============================================================
   celeryworker:
-    image: "${DOCKER_IMAGE_CELERYWORKER:-fastapi-celeryworker}:latest"
+    image: fastapi-celeryworker:latest
 
     build:
       context: ./backend
@@ -153,7 +153,7 @@ services:
   # NEXT.JS FRONTEND
   # ============================================================
   frontend:
-    image: "${DOCKER_IMAGE_FRONTEND:-farm-frontend}:latest"
+    image: farm-frontend:latest
 
     build:
       context: ./frontend
@@ -187,16 +187,16 @@ services:
       - default
 
 
-# ==============================================================
+# ============================================================
 # VOLUMES
-# ==============================================================
+# ============================================================
 volumes:
   app-mongodb-data:
 
 
-# ==============================================================
+# ============================================================
 # NETWORKS
-# ==============================================================
+# ============================================================
 networks:
   traefik-public:
     external: true
