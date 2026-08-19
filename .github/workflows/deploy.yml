@@ -1,80 +1,46 @@
-name: Production Swarm Deploy
+name: Deploy FastAPI MongoDB App
 
 on:
   push:
     branches:
       - main
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_BASE: ghcr.io/${{ github.repository_owner }}/farm-app
-
 jobs:
-
-  # ==========================================================
-  # BUILD & PUSH
-  # ==========================================================
-  build-and-push:
+  deploy:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
+    environment: Secrets
 
     steps:
 
-      - name: Checkout Code
+      # ==========================================================
+      # 1. CHECKOUT CODE
+      # ==========================================================
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Backend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          file: ./backend/backend.dockerfile
-          push: true
-          tags: ${{ env.IMAGE_BASE }}-backend:latest
+      # ==========================================================
+      # 2. SETUP SSH
+      # ==========================================================
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
 
-      - name: Build and Push Celery Worker
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          file: ./backend/celeryworker.dockerfile
-          push: true
-          tags: ${{ env.IMAGE_BASE }}-celeryworker:latest
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
 
-      - name: Build and Push Frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: true
-          tags: ${{ env.IMAGE_BASE }}-frontend:latest
+          chmod 600 ~/.ssh/ec2_key
+
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
 
-  # ==========================================================
-  # DEPLOY TO SWARM
-  # ==========================================================
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
+      # ==========================================================
+      # 3. DEPLOY TO EC2
+      # ==========================================================
+      - name: Deploy to EC2
+        run: |
 
-    steps:
-
-      - name: Deploy to Docker Swarm
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-          script: |
+          ssh -i ~/.ssh/ec2_key \
+            "${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}" << 'EOF'
 
             set -e
 
@@ -82,47 +48,174 @@ jobs:
             echo "STARTING DEPLOYMENT"
             echo "=========================================="
 
-            cd ~/farm-app
+            cd "${{ secrets.APP_PATH }}"
 
-            echo "Pulling latest source code..."
+
+            # ====================================================
+            # UPDATE SOURCE CODE
+            # ====================================================
+
+            echo "Pulling latest code..."
 
             git fetch origin
+
             git reset --hard origin/main
 
 
-            echo "=========================================="
-            echo "LOGIN TO GHCR"
-            echo "=========================================="
-
-            echo "${{ secrets.GHCR_TOKEN }}" | \
-              docker login ghcr.io \
-              -u "${{ secrets.GHCR_USERNAME }}" \
-              --password-stdin
-
+            # ====================================================
+            # CHECK DOCKER
+            # ====================================================
 
             echo "=========================================="
-            echo "PULLING DOCKER IMAGES"
+            echo "CHECKING DOCKER"
             echo "=========================================="
 
-            docker pull ${{ env.IMAGE_BASE }}-backend:latest
+            docker --version
 
-            docker pull ${{ env.IMAGE_BASE }}-celeryworker:latest
+            docker compose version
 
-            docker pull ${{ env.IMAGE_BASE }}-frontend:latest
 
+            # ====================================================
+            # CHECK DOCKER SWARM
+            # ====================================================
 
             echo "=========================================="
-            echo "DEPLOYING SWARM STACK"
+            echo "CHECKING DOCKER SWARM"
             echo "=========================================="
 
-            export IMAGE_BASE=${{ env.IMAGE_BASE }}
+            SWARM_STATE=$(docker info --format '{{.Swarm.LocalNodeState}}')
+
+            echo "Swarm state: $SWARM_STATE"
+
+            if [ "$SWARM_STATE" != "active" ]; then
+              echo "ERROR: Docker Swarm is not active."
+              exit 1
+            fi
+
+
+            # ====================================================
+            # CHECK / CREATE TRAEFIK OVERLAY NETWORK
+            # ====================================================
+
+            echo "=========================================="
+            echo "CHECKING TRAEFIK NETWORK"
+            echo "=========================================="
+
+            if docker network inspect traefik-public >/dev/null 2>&1; then
+
+              echo "traefik-public network already exists."
+
+            else
+
+              echo "Creating traefik-public overlay network..."
+
+              docker network create \
+                --driver overlay \
+                --attachable \
+                traefik-public
+
+            fi
+
+
+            # ====================================================
+            # VERIFY TRAEFIK NETWORK
+            # ====================================================
+
+            echo "=========================================="
+            echo "VERIFYING TRAEFIK NETWORK"
+            echo "=========================================="
+
+            docker network inspect traefik-public \
+              --format 'Name={{.Name}} Driver={{.Driver}} Scope={{.Scope}}'
+
+
+            # ====================================================
+            # CHECK REQUIRED FILES
+            # ====================================================
+
+            echo "=========================================="
+            echo "CHECKING REQUIRED FILES"
+            echo "=========================================="
+
+            test -f .env
+            test -f docker-compose.yml
+            test -f conf/rabbitmq.conf
+            test -f frontend/.env.local
+
+            echo "All required files are present."
+
+
+            # ====================================================
+            # VALIDATE DOCKER COMPOSE
+            # ====================================================
+
+            echo "=========================================="
+            echo "VALIDATING DOCKER COMPOSE"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              config > /dev/null
+
+            echo "Docker Compose validation successful."
+
+
+            # ====================================================
+            # BUILD BACKEND
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING BACKEND"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build backend
+
+
+            # ====================================================
+            # BUILD CELERY WORKER
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING CELERY WORKER"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build celeryworker
+
+
+            # ====================================================
+            # BUILD FRONTEND
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING FRONTEND"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build frontend
+
+
+            # ====================================================
+            # DEPLOY DOCKER SWARM STACK
+            # ====================================================
+
+            echo "=========================================="
+            echo "DEPLOYING DOCKER SWARM STACK"
+            echo "=========================================="
 
             docker stack deploy \
-              --with-registry-auth \
               --detach=true \
               -c docker-compose.yml \
-              farm-app
+              fastapi-app
 
+
+            # ====================================================
+            # WAIT FOR SERVICES
+            # ====================================================
 
             echo "=========================================="
             echo "WAITING FOR SERVICES"
@@ -131,13 +224,68 @@ jobs:
             sleep 20
 
 
+            # ====================================================
+            # SHOW STACK SERVICES
+            # ====================================================
+
             echo "=========================================="
             echo "STACK SERVICES"
             echo "=========================================="
 
-            docker stack services farm-app
+            docker stack services fastapi-app
 
 
+            # ====================================================
+            # SHOW SERVICE STATUS
+            # ====================================================
+
             echo "=========================================="
-            echo "DEPLOYMENT COMPLETE"
+            echo "SERVICE STATUS"
             echo "=========================================="
+
+            docker service ps fastapi-app_proxy --no-trunc
+
+            docker service ps fastapi-app_backend --no-trunc
+
+            docker service ps fastapi-app_celeryworker --no-trunc
+
+            docker service ps fastapi-app_frontend --no-trunc
+
+            docker service ps fastapi-app_mongodb --no-trunc
+
+            docker service ps fastapi-app_queue --no-trunc
+
+            docker service ps fastapi-app_flower --no-trunc
+
+
+            # ====================================================
+            # SHOW RUNNING CONTAINERS
+            # ====================================================
+
+            echo "=========================================="
+            echo "RUNNING CONTAINERS"
+            echo "=========================================="
+
+            docker ps
+
+
+            # ====================================================
+            # CHECK SERVICE REPLICAS
+            # ====================================================
+
+            echo "=========================================="
+            echo "CHECKING SERVICE REPLICAS"
+            echo "=========================================="
+
+            docker stack services fastapi-app
+
+
+            # ====================================================
+            # DEPLOYMENT COMPLETE
+            # ====================================================
+
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "=========================================="
+
+          EOF
