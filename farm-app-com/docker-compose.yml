@@ -10,7 +10,7 @@ services:
       - "--providers.docker.swarmmode=true"
       - "--providers.docker.endpoint=unix:///var/run/docker.sock"
       - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=farm-app-com_default"
+      - "--providers.docker.network=traefik-public"
       - "--entrypoints.http.address=:80"
       - "--api.dashboard=true"
       - "--api.insecure=true"
@@ -79,18 +79,7 @@ services:
   # FASTAPI BACKEND
   # ============================================================
   backend:
-    image: "${DOCKER_IMAGE_BACKEND:-fastapi-backend}:latest"
-
-    build:
-      context: ./backend
-      dockerfile: backend.dockerfile
-
-      args:
-        BACKEND_APP_MODULE: ${BACKEND_APP_MODULE:-app.main:app}
-        BACKEND_PRE_START_PATH: ${BACKEND_PRE_START_PATH:-/app/prestart.sh}
-        BACKEND_PROCESS_MANAGER: ${BACKEND_PROCESS_MANAGER:-gunicorn}
-        BACKEND_WITH_RELOAD: ${BACKEND_WITH_RELOAD:-false}
-        INSTALL_DEV: ${INSTALL_DEV:-false}
+    image: "${DOCKER_IMAGE_BACKEND}:latest"
 
     env_file:
       - .env
@@ -123,14 +112,7 @@ services:
   # CELERY WORKER
   # ============================================================
   celeryworker:
-    image: "${DOCKER_IMAGE_CELERYWORKER:-fastapi-celeryworker}:latest"
-
-    build:
-      context: ./backend
-      dockerfile: celeryworker.dockerfile
-
-      args:
-        INSTALL_DEV: ${INSTALL_DEV:-false}
+    image: "${DOCKER_IMAGE_CELERYWORKER}:latest"
 
     env_file:
       - .env
@@ -154,10 +136,7 @@ services:
   # NEXT.JS FRONTEND
   # ============================================================
   frontend:
-    image: "${DOCKER_IMAGE_FRONTEND:-fastapi-frontend}:latest"
-
-    build:
-      context: ./frontend
+    image: "${DOCKER_IMAGE_FRONTEND}:latest"
 
     env_file:
       - .env
@@ -181,8 +160,6 @@ services:
   # ============================================================
   mongodb:
     image: mongo:7
-
-    restart: unless-stopped
 
     volumes:
       - app-mongodb-data:/data/db
