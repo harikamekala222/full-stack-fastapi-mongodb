@@ -5,10 +5,6 @@ on:
     branches:
       - main
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -41,10 +37,16 @@ jobs:
       # 3. DEPLOY TO EC2
       # ==========================================================
       - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          APP_PATH: ${{ secrets.APP_PATH }}
+
         run: |
 
           ssh -i ~/.ssh/ec2_key \
-            "${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}" << 'EOF'
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            "APP_PATH='${APP_PATH}' bash -s" << 'EOF'
 
             set -e
 
@@ -52,25 +54,26 @@ jobs:
             echo "STARTING DEPLOYMENT"
             echo "=========================================="
 
+            echo "Application path:"
+            echo "$APP_PATH"
+
+            cd "$APP_PATH"
+
+            echo "Current directory:"
+            pwd
+
 
             # ====================================================
             # UPDATE SOURCE CODE
             # ====================================================
 
-            cd "${{ secrets.APP_PATH }}"
-
-            echo "Pulling latest code..."
+            echo "=========================================="
+            echo "PULLING LATEST CODE"
+            echo "=========================================="
 
             git fetch origin
 
             git reset --hard origin/main
-
-
-            # ====================================================
-            # ENTER APPLICATION DIRECTORY
-            # ====================================================
-
-            cd farm-app-com
 
 
             # ====================================================
@@ -157,48 +160,6 @@ jobs:
 
 
             # ====================================================
-            # LOGIN TO GHCR
-            # ====================================================
-
-            echo "=========================================="
-            echo "LOGIN TO GHCR"
-            echo "=========================================="
-
-            echo "${{ secrets.GHCR_READ_TOKEN }}" | \
-              docker login ghcr.io \
-              -u "${{ github.repository_owner }}" \
-              --password-stdin
-
-            echo "GHCR login successful."
-
-
-            # ====================================================
-            # SET GHCR IMAGE NAMES
-            # ====================================================
-
-            export DOCKER_IMAGE_BACKEND="ghcr.io/${{ github.repository_owner }}/farm-backend"
-
-            export DOCKER_IMAGE_FRONTEND="ghcr.io/${{ github.repository_owner }}/farm-frontend"
-
-            export DOCKER_IMAGE_CELERYWORKER="ghcr.io/${{ github.repository_owner }}/fastapi-celeryworker"
-
-
-            # ====================================================
-            # PULL DOCKER IMAGES
-            # ====================================================
-
-            echo "=========================================="
-            echo "PULLING DOCKER IMAGES"
-            echo "=========================================="
-
-            docker pull "$DOCKER_IMAGE_BACKEND:latest"
-
-            docker pull "$DOCKER_IMAGE_FRONTEND:latest"
-
-            docker pull "$DOCKER_IMAGE_CELERYWORKER:latest"
-
-
-            # ====================================================
             # VALIDATE DOCKER COMPOSE
             # ====================================================
 
@@ -214,7 +175,46 @@ jobs:
 
 
             # ====================================================
-            # DEPLOY DOCKER SWARM STACK
+            # BUILD BACKEND
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING BACKEND"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build backend
+
+
+            # ====================================================
+            # BUILD CELERY WORKER
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING CELERY WORKER"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build celeryworker
+
+
+            # ====================================================
+            # BUILD FRONTEND
+            # ====================================================
+
+            echo "=========================================="
+            echo "BUILDING FRONTEND"
+            echo "=========================================="
+
+            docker compose \
+              -f docker-compose.yml \
+              build frontend
+
+
+            # ====================================================
+            # DEPLOY DOCKER SWARM
             # ====================================================
 
             echo "=========================================="
@@ -222,7 +222,6 @@ jobs:
             echo "=========================================="
 
             docker stack deploy \
-              --with-registry-auth \
               --detach=true \
               -c docker-compose.yml \
               fastapi-app
@@ -285,11 +284,11 @@ jobs:
 
 
             # ====================================================
-            # CHECK SERVICE REPLICAS
+            # FINAL SERVICE CHECK
             # ====================================================
 
             echo "=========================================="
-            echo "CHECKING SERVICE REPLICAS"
+            echo "FINAL SERVICE STATUS"
             echo "=========================================="
 
             docker stack services fastapi-app

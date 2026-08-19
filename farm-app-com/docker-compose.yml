@@ -30,7 +30,6 @@ services:
       labels:
         - "traefik.enable=true"
 
-        # Traefik dashboard
         - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/dashboard`)"
         - "traefik.http.routers.traefik-dashboard.entrypoints=http"
         - "traefik.http.routers.traefik-dashboard.service=api@internal"
@@ -70,6 +69,7 @@ services:
     deploy:
       labels:
         - "traefik.enable=true"
+
         - "traefik.http.routers.flower.rule=Host(`flower.13.203.142.37`)"
         - "traefik.http.routers.flower.entrypoints=http"
         - "traefik.http.services.flower.loadbalancer.server.port=5555"
@@ -79,7 +79,18 @@ services:
   # FASTAPI BACKEND
   # ============================================================
   backend:
-    image: "${DOCKER_IMAGE_BACKEND}:latest"
+    image: "${DOCKER_IMAGE_BACKEND:-farm-backend}:latest"
+
+    build:
+      context: ./backend
+      dockerfile: backend.dockerfile
+
+      args:
+        BACKEND_APP_MODULE: ${BACKEND_APP_MODULE:-app.main:app}
+        BACKEND_PRE_START_PATH: ${BACKEND_PRE_START_PATH:-/app/prestart.sh}
+        BACKEND_PROCESS_MANAGER: ${BACKEND_PROCESS_MANAGER:-gunicorn}
+        BACKEND_WITH_RELOAD: ${BACKEND_WITH_RELOAD:-false}
+        INSTALL_DEV: ${INSTALL_DEV:-false}
 
     env_file:
       - .env
@@ -102,7 +113,6 @@ services:
       labels:
         - "traefik.enable=true"
 
-        # FastAPI API
         - "traefik.http.routers.backend.rule=Host(`13.203.142.37`) && (PathPrefix(`/api`) || PathPrefix(`/docs`) || PathPrefix(`/redoc`))"
         - "traefik.http.routers.backend.entrypoints=http"
         - "traefik.http.services.backend.loadbalancer.server.port=80"
@@ -112,7 +122,14 @@ services:
   # CELERY WORKER
   # ============================================================
   celeryworker:
-    image: "${DOCKER_IMAGE_CELERYWORKER}:latest"
+    image: "${DOCKER_IMAGE_CELERYWORKER:-fastapi-celeryworker}:latest"
+
+    build:
+      context: ./backend
+      dockerfile: celeryworker.dockerfile
+
+      args:
+        INSTALL_DEV: ${INSTALL_DEV:-false}
 
     env_file:
       - .env
@@ -136,7 +153,10 @@ services:
   # NEXT.JS FRONTEND
   # ============================================================
   frontend:
-    image: "${DOCKER_IMAGE_FRONTEND}:latest"
+    image: "${DOCKER_IMAGE_FRONTEND:-farm-frontend}:latest"
+
+    build:
+      context: ./frontend
 
     env_file:
       - .env
@@ -149,7 +169,6 @@ services:
       labels:
         - "traefik.enable=true"
 
-        # Frontend
         - "traefik.http.routers.frontend.rule=Host(`13.203.142.37`)"
         - "traefik.http.routers.frontend.entrypoints=http"
         - "traefik.http.services.frontend.loadbalancer.server.port=3000"
