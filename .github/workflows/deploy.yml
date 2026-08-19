@@ -1,4 +1,4 @@
-name: Deploy FastAPI MongoDB App
+name: Deploy-FastAPI-MongoDB App
 
 on:
   push:
