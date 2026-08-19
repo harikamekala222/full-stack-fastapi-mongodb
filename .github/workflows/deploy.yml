@@ -1,45 +1,143 @@
-name: Deploy-FastAPI-MongoDB App
+name: Deploy FastAPI MongoDB App
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  deploy:
+
+  # ==========================================================
+  # BUILD AND PUSH DOCKER IMAGES
+  # ==========================================================
+  build-and-push:
     runs-on: ubuntu-latest
-    environment: Secrets
 
     steps:
 
-      # ==========================================================
-      # 1. CHECKOUT CODE
-      # ==========================================================
+      # --------------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
 
-      # ==========================================================
-      # 2. SETUP SSH
-      # ==========================================================
+      # --------------------------------------------------------
+      # LOGIN TO GHCR
+      # --------------------------------------------------------
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+
+      # --------------------------------------------------------
+      # SET IMAGE NAMES
+      # --------------------------------------------------------
+      - name: Set image names
+        run: |
+          echo "BACKEND_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/farm-app-backend" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/farm-app-frontend" >> $GITHUB_ENV
+          echo "CELERY_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/farm-app-celeryworker" >> $GITHUB_ENV
+
+
+      # --------------------------------------------------------
+      # BUILD BACKEND
+      # --------------------------------------------------------
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./farm-app-com/backend
+          file: ./farm-app-com/backend/backend.dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:latest
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          build-args: |
+            BACKEND_APP_MODULE=app.main:app
+            BACKEND_PRE_START_PATH=/app/prestart.sh
+            BACKEND_PROCESS_MANAGER=gunicorn
+            BACKEND_WITH_RELOAD=false
+            INSTALL_DEV=false
+
+
+      # --------------------------------------------------------
+      # BUILD CELERY WORKER
+      # --------------------------------------------------------
+      - name: Build and push celery worker
+        uses: docker/build-push-action@v6
+        with:
+          context: ./farm-app-com/backend
+          file: ./farm-app-com/backend/celeryworker.dockerfile
+          push: true
+          tags: |
+            ${{ env.CELERY_IMAGE }}:latest
+            ${{ env.CELERY_IMAGE }}:${{ github.sha }}
+          build-args: |
+            INSTALL_DEV=false
+
+
+      # --------------------------------------------------------
+      # BUILD FRONTEND
+      # --------------------------------------------------------
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./farm-app-com/frontend
+          push: true
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+
+
+  # ==========================================================
+  # DEPLOY TO EC2
+  # ==========================================================
+  deploy:
+    needs: build-and-push
+
+    runs-on: ubuntu-latest
+
+    environment: Secrets
+
+    steps:
+
+      # --------------------------------------------------------
+      # CHECKOUT CODE
+      # --------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # SETUP SSH
+      # --------------------------------------------------------
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
 
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
 
           chmod 600 ~/.ssh/ec2_key
 
           ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
 
-      # ==========================================================
-      # 3. DEPLOY TO EC2
-      # ==========================================================
+      # --------------------------------------------------------
+      # DEPLOY TO EC2
+      # --------------------------------------------------------
       - name: Deploy to EC2
         run: |
 
-          ssh -i ~/.ssh/ec2_key \
+          ssh \
+            -i ~/.ssh/ec2_key \
+            -o IdentitiesOnly=yes \
             "${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}" << 'EOF'
 
             set -e
@@ -60,6 +158,16 @@ jobs:
             git fetch origin
 
             git reset --hard origin/main
+
+
+            # ====================================================
+            # ENTER APPLICATION DIRECTORY
+            # ====================================================
+
+            cd farm-app-com
+
+            echo "Application directory:"
+            pwd
 
 
             # ====================================================
@@ -94,7 +202,7 @@ jobs:
 
 
             # ====================================================
-            # CHECK / CREATE TRAEFIK OVERLAY NETWORK
+            # CHECK TRAEFIK NETWORK
             # ====================================================
 
             echo "=========================================="
@@ -121,10 +229,6 @@ jobs:
             # VERIFY TRAEFIK NETWORK
             # ====================================================
 
-            echo "=========================================="
-            echo "VERIFYING TRAEFIK NETWORK"
-            echo "=========================================="
-
             docker network inspect traefik-public \
               --format 'Name={{.Name}} Driver={{.Driver}} Scope={{.Scope}}'
 
@@ -146,6 +250,64 @@ jobs:
 
 
             # ====================================================
+            # LOGIN TO GHCR
+            # ====================================================
+
+            echo "=========================================="
+            echo "LOGIN TO GHCR"
+            echo "=========================================="
+
+            echo "${{ secrets.GHCR_READ_TOKEN }}" | \
+              docker login ghcr.io \
+              -u "${{ github.repository_owner }}" \
+              --password-stdin
+
+
+            # ====================================================
+            # SET GHCR IMAGE NAMES
+            # ====================================================
+
+            export DOCKER_IMAGE_BACKEND="ghcr.io/${{ github.repository_owner }}/farm-app-backend"
+
+            export DOCKER_IMAGE_FRONTEND="ghcr.io/${{ github.repository_owner }}/farm-app-frontend"
+
+            export DOCKER_IMAGE_CELERYWORKER="ghcr.io/${{ github.repository_owner }}/farm-app-celeryworker"
+
+
+            # ====================================================
+            # SHOW IMAGE CONFIGURATION
+            # ====================================================
+
+            echo "=========================================="
+            echo "IMAGE CONFIGURATION"
+            echo "=========================================="
+
+            echo "Backend:"
+            echo "$DOCKER_IMAGE_BACKEND:latest"
+
+            echo "Frontend:"
+            echo "$DOCKER_IMAGE_FRONTEND:latest"
+
+            echo "Celery:"
+            echo "$DOCKER_IMAGE_CELERYWORKER:latest"
+
+
+            # ====================================================
+            # PULL APPLICATION IMAGES
+            # ====================================================
+
+            echo "=========================================="
+            echo "PULLING APPLICATION IMAGES"
+            echo "=========================================="
+
+            docker pull "$DOCKER_IMAGE_BACKEND:latest"
+
+            docker pull "$DOCKER_IMAGE_FRONTEND:latest"
+
+            docker pull "$DOCKER_IMAGE_CELERYWORKER:latest"
+
+
+            # ====================================================
             # VALIDATE DOCKER COMPOSE
             # ====================================================
 
@@ -161,45 +323,6 @@ jobs:
 
 
             # ====================================================
-            # BUILD BACKEND
-            # ====================================================
-
-            echo "=========================================="
-            echo "BUILDING BACKEND"
-            echo "=========================================="
-
-            docker compose \
-              -f docker-compose.yml \
-              build backend
-
-
-            # ====================================================
-            # BUILD CELERY WORKER
-            # ====================================================
-
-            echo "=========================================="
-            echo "BUILDING CELERY WORKER"
-            echo "=========================================="
-
-            docker compose \
-              -f docker-compose.yml \
-              build celeryworker
-
-
-            # ====================================================
-            # BUILD FRONTEND
-            # ====================================================
-
-            echo "=========================================="
-            echo "BUILDING FRONTEND"
-            echo "=========================================="
-
-            docker compose \
-              -f docker-compose.yml \
-              build frontend
-
-
-            # ====================================================
             # DEPLOY DOCKER SWARM STACK
             # ====================================================
 
@@ -208,6 +331,7 @@ jobs:
             echo "=========================================="
 
             docker stack deploy \
+              --with-registry-auth \
               --detach=true \
               -c docker-compose.yml \
               fastapi-app
